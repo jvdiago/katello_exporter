@@ -4,6 +4,7 @@ import re
 import time
 import argparse
 from pprint import pprint
+import json
 import requests
 import os
 from sys import exit
@@ -26,7 +27,7 @@ class KatelloCollector(object):
         self._user = user
         self._password = password
         self._insecure = insecure
-        self._prometheus_metrics = {}
+        self._prometheus_metrics = []
         self._prefix = 'katello'
         
     def collect(self):
@@ -68,7 +69,10 @@ class KatelloCollector(object):
         if response.status_code != requests.codes.ok:
             raise Exception(
                 "Call to url %s failed with status: %s" % (url, response.status_code))
-        result = response.json()
+        try:
+            result = response.json()
+        except json.decoder.JSONDecodeError:
+            result = response
 
         if DEBUG:
             pprint(result)
@@ -82,11 +86,54 @@ class KatelloCollector(object):
                 'ok_hosts',
                 'out_of_sync_hosts',
                 'pending_hosts']:
-            self._prometheus_metrics[host_status] = GaugeMetricFamily(
+            self._prometheus_metrics.append(GaugeMetricFamily(
                 '{0}_{1}'.format(self._prefix, host_status),
-                '{0} number of {1}'.format(self._prefix, ' '.join(host_status.split('_'))),
+                'Number of {1}'.format(' '.join(host_status.split('_'))),
                 labels=['enabled'],
-            )
+            ))
+
+        self._prometheus_metrics.append(GaugeMetricFamily(
+            '{0}_total_hosts'.format(self._prefix),
+            'Total number of hosts'.format(' '.join(host_status.split('_'))),
+        ))
+        for service_status in [
+                'candlepin',
+                'candlepin_auth',
+                'foreman_tasks',
+                'pulp',
+                'pulp_auth']:
+            self._prometheus_metrics.append(GaugeMetricFamily(
+                '{0}_{1}'.format(self._prefix, service_status),
+                '{1} health'.format(service_status),
+            ))
+
+        self._prometheus_metrics.append(GaugeMetricFamily(
+            '{0}_subcription_status'.format(self._prefix),
+            'Subscription status',
+            labels=['status'],
+        ))
+
+        self._prometheus_metrics.append(GaugeMetricFamily(
+            '{0}_smart_proxy_status'.format(self._prefix),
+            'Smart Proxy status',
+            labels=['node'],
+        ))
+
+        self._prometheus_metrics.append(GaugeMetricFamily(
+            '{0}_tasks_status'.format(self._prefix),
+            'tasks status',
+            labels=['status'],
+        ))
+
+    def _get_tasks(self):
+        endpoint = '/foreman_tasks/tasks?search=state+%3D++running"'
+        
+    def _get_proxies_data(self):
+        endpoint = '/smart_proxies/{0}/ping'
+        
+    def _get_subscription_data(self):
+        statuses = ['invalid', 'valid', 'partial']
+        endpoint = '/api/v2/hosts?search=+subscription_status+%3D+invalid'
 
     def _parse_katello_result(self, response):
         for metric in response:
