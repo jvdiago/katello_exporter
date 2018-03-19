@@ -1,6 +1,5 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
-import re
 import time
 import argparse
 from pprint import pprint
@@ -19,47 +18,76 @@ COLLECTION_TIME = Summary(
 
 
 class KatelloCollector(object):
-    # The build statuses we want to export about.
-    resources = ["hosts", "", ]
-
     def __init__(self, target, user, password, insecure):
         self._target = target.rstrip("/")
         self._user = user
         self._password = password
         self._insecure = insecure
-        self._prometheus_metrics = []
-        self._prefix = 'katello'
-        
+        self._prometheus_metrics = {}
+
+        # Endpoints
+        dashboard_endpoints = [('dashboard', '/api/dashboard')]
+        task_endpoints = [('tasks', '/foreman_tasks/api/tasks/summary')]
+        subscription_endpoints = [
+            ('partial', '/api/v2/hosts?search=+subscription_status+%3D+partial'),
+            ('valid', '/api/v2/hosts?search=+subscription_status+%3D+valid'),
+            ('invalid', '/api/v2/hosts?search=+subscription_status+%3D+invalid'),
+            ('unknown', '/api/v2/hosts?search=+subscription_status+%3D+unknown'),
+
+        ]
+        service_endpoints = [('services', '/katello/api/ping')]
+
+        self._endpoints = [
+            (dashboard_endpoints, self._store_dashboard_data),
+            (task_endpoints, self._store_task_data),
+            (subscription_endpoints, self._store_subscription_data),
+            (service_endpoints, self._store_service_data)
+        ]
+
+        # Metric Names
+        self._dashboard_complex_metrics = [
+            'katello_active_hosts_ok',
+            'katello_bad_hosts',
+            'katello_ok_hosts',
+            'katello_out_of_sync_hosts',
+            'katello_good_hosts',
+            'katello_pending_hosts'
+        ]
+        self._dashboard_simple_metrics = [
+            'katello_active_hosts',
+            'katello_reports_missing',
+            'katello_total_hosts']
+        self._task_metrics = 'katello_tasks_status'
+        self._subscription_metrics = 'katello_subscription_status'
+        self._service_metrics = 'katello_service_status'
+
     def collect(self):
         start = time.time()
 
         self._setup_empty_prometheus_metrics()
 
-        # Maybe not
-        # number of hosts (total) -> index_hosts
-        # number of facts (total) -> index_facts
+        for metrics in self._endpoints:
+            endpoints, store_func = metrics
+            store_func(self._get_endpoints_data(endpoints))
 
-        # puppet status: good, changed, bad, out-of-sync, disabled (total)
-        # global health
-        # subscriptions: hosts with susbcriptions, with invalid subscription
-        # smart proxies health
-        # tasks: running, stopped, planning, completed, failed
-
-        for metric in self._prometheus_metrics:
+        for metric in self._prometheus_metrics.values():
             yield metric
-        
+
         duration = time.time() - start
         COLLECTION_TIME.observe(duration)
-        
-    def _request_data(self, endpoint):
+
+    def _request_data(self, endpoint, data=None, params=None):
         url = '{0}{1}'.format(self._target, endpoint)
         if self._insecure:
             requests.packages.urllib3.disable_warnings()
 
+        if data:
+            data = json.dumps(data)
+
         response = requests.get(
             url,
-            params=None,
-            data=None,
+            params=params,
+            data=data,
             auth=(self._user, self._password),
             verify=(not self._insecure))
 
@@ -80,97 +108,101 @@ class KatelloCollector(object):
         return result
 
     def _setup_empty_prometheus_metrics(self):
-        for host_status in [
-                'active_hosts',
-                'bad_hosts',
-                'ok_hosts',
-                'out_of_sync_hosts',
-                'pending_hosts']:
-            self._prometheus_metrics.append(GaugeMetricFamily(
-                '{0}_{1}'.format(self._prefix, host_status),
-                'Number of {1}'.format(' '.join(host_status.split('_'))),
+        for host_status in self._dashboard_complex_metrics:
+            self._prometheus_metrics[host_status] = GaugeMetricFamily(
+                host_status,
+                'Number of {0}'.format(' '.join(host_status.split('_'))),
                 labels=['enabled'],
-            ))
+            )
 
-        self._prometheus_metrics.append(GaugeMetricFamily(
-            '{0}_total_hosts'.format(self._prefix),
-            'Total number of hosts'.format(' '.join(host_status.split('_'))),
-        ))
-        for service_status in [
-                'candlepin',
-                'candlepin_auth',
-                'foreman_tasks',
-                'pulp',
-                'pulp_auth']:
-            self._prometheus_metrics.append(GaugeMetricFamily(
-                '{0}_{1}'.format(self._prefix, service_status),
-                '{1} health'.format(service_status),
-            ))
+        for host_status in self._dashboard_simple_metrics:
+            self._prometheus_metrics[host_status] = GaugeMetricFamily(
+                host_status,
+                'Number of {0}'.format(' '.join(host_status.split('_'))),
+            )
 
-        self._prometheus_metrics.append(GaugeMetricFamily(
-            '{0}_subcription_status'.format(self._prefix),
+        self._prometheus_metrics[self._service_metrics] = GaugeMetricFamily(
+            self._service_metrics,
+            'Service status',
+            labels=['service_status', 'service']
+        )
+
+        self._prometheus_metrics[self._subscription_metrics] = GaugeMetricFamily(
+            self._subscription_metrics,
             'Subscription status',
-            labels=['status'],
-        ))
+            labels=['subscription_status'],
+        )
 
-        self._prometheus_metrics.append(GaugeMetricFamily(
-            '{0}_smart_proxy_status'.format(self._prefix),
-            'Smart Proxy status',
-            labels=['node'],
-        ))
+        self._prometheus_metrics[self._task_metrics] = GaugeMetricFamily(
+            self._task_metrics,
+            'Task status',
+            labels=['task_status'],
+        )
 
-        self._prometheus_metrics.append(GaugeMetricFamily(
-            '{0}_tasks_status'.format(self._prefix),
-            'tasks status',
-            labels=['status'],
-        ))
+    def _get_endpoints_data(self, endpoints):
+        data = {}
+        for endpoint in endpoints:
+            endpoint_name, endpoint_url = endpoint
+            raw_data = self._request_data(endpoint_url)
+            data[endpoint_name] = raw_data
 
-    def _get_tasks(self):
-        endpoint = '/foreman_tasks/tasks?search=state+%3D++running"'
-        
-    def _get_proxies_data(self):
-        endpoint = '/smart_proxies/{0}/ping'
-        
-    def _get_subscription_data(self):
-        statuses = ['invalid', 'valid', 'partial']
-        endpoint = '/api/v2/hosts?search=+subscription_status+%3D+invalid'
+        return data
 
-    def _parse_katello_result(self, response):
-        for metric in response:
-            metric_name, metric_value, metric_labels = metric
-            self._add_data_to_prometheus_structure(metric_name, metric_value, metric_labels)
-            
-    def _add_data_to_prometheus_structure(self, metric_name, value, labels):
+    def _store_dashboard_data(self, data):
+        for endpoint_name, endpoint_data in data.items():
+            for puppet_status, count in endpoint_data.items():
+                metric_name = 'katello_' + \
+                    puppet_status.replace('_enabled', '')
+                enabled = 'true' if 'enabled' in puppet_status else 'false'
+
+                if metric_name in self._dashboard_complex_metrics:
+                    self._add_data_to_prometheus_structure(
+                        metric_name, count, [enabled])
+                elif metric_name in self._dashboard_simple_metrics:
+                    self._add_data_to_prometheus_structure(metric_name, count)
+
+    def _store_task_data(self, data):
+        for endpoint_name, endpoint_data in data.items():
+            for task_status in endpoint_data:
+                status = task_status['state']
+                count = task_status['count']
+                self._add_data_to_prometheus_structure(
+                    self._task_metrics, count, [status])
+
+    def _store_subscription_data(self, data):
+        for endpoint_name, endpoint_data in data.items():
+            count = len(endpoint_data['results'])
+            status = endpoint_name
+            self._add_data_to_prometheus_structure(
+                self._subscription_metrics, count, [status])
+
+    def _store_service_data(self, data):
+        status_values = ['ok', 'fail']
+
+        for endpoint_name, endpoint_data in data.items():
+            services = endpoint_data['services']
+            for service_name, service_data in services.items():
+                service_status = service_data['status']
+                for status in status_values:
+                    value = 1 if service_status.lower() == status else 0
+                    self._add_data_to_prometheus_structure(
+                        self._service_metrics, value, [status, service_name])
+
+    def _add_data_to_prometheus_structure(self, metric_name, value, labels=[]):
         # Ignore metrics that have not been previously registered
         if metric_name in self._prometheus_metrics:
-            if labels:
-                self._prometheus_metrics[metric_name].labels(labels).set(value)
-            else:
-                self._prometheus_metrics[metric_name].set(value)
-
-    # def _add_data_to_prometheus_structure(self, resource_name, data):
-    #     self.prometheus_metrics[resource_name] = []
-
-    #     for metric in data:
-    #         metric_name = metric[0]
-    #         metric_value = metric[1]
-    #         metric_labels = metric[2]
-    #         self._prometheus_metrics[resource_name].append(
-    #              GaugeMetricFamily(
-    #                  '{0}_{1}_{2}'.format(self._prefix, resource_name, metric_name),
-    #                  '{0} number of {1}'.format(self._prefix, ' '.join(metric_name.split('_'))),
-    #                  labels=metric_labels).set(metric_value))
+            self._prometheus_metrics[metric_name].add_metric(labels, value)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Katello exporter args jenkins address and port'
+        description='Katello exporter args katello address and port'
     )
     parser.add_argument(
         '-j', '--katello',
         metavar='katello',
         required=False,
-        help='server url from the jenkins api',
+        help='server url from the katello api',
         default=os.environ.get('KATELLO_SERVER', 'https://katello')
     )
     parser.add_argument(
@@ -202,7 +234,7 @@ def parse_args():
         action='store_true',
         help='Allow connection to insecure Katello API',
         default=False
-    )    
+    )
     return parser.parse_args()
 
 
@@ -210,7 +242,8 @@ def main():
     try:
         args = parse_args()
         port = int(args.port)
-        REGISTRY.register(KatelloCollector(args.katello, args.user, args.password))
+        REGISTRY.register(KatelloCollector(
+            args.katello, args.user, args.password, args.insecure))
         start_http_server(port)
         print("Polling {}. Serving at port: {}".format(args.katello, port))
         while True:
