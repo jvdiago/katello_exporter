@@ -1,4 +1,5 @@
 #!/bin/bash
+docker --version
 docker build -t katello_exporter .
 docker images
 docker tag katello_exporter $DOCKER_USERNAME/katello_exporter
