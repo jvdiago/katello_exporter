@@ -1,5 +1,7 @@
 # Katello Exporter
 
+[![Build Status](https://api.travis-ci.org/jvdiago/katello_exporter.svg?branch=master)](https://travis-ci.org/jvdiago/katello_exporter)
+
 Katello exporter for prometheus.io, written in python.
 
 This exporter is based on https://github.com/lovoo/jenkins_exporter
