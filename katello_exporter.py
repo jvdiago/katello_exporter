@@ -68,7 +68,12 @@ class KatelloCollector(object):
 
         for metrics in self._endpoints:
             endpoints, store_func = metrics
-            store_func(self._get_endpoints_data(endpoints))
+            try:
+                store_func(self._get_endpoints_data(endpoints))
+            except requests.exceptions.ConnectionError as e:
+                print('Error connecting to server {0}. {1}'.format(self._target, e))
+            except Exception as e:
+                print('Unknown error retreving data in endpoints {0}. {1}'.format(endpoints, e))
 
         for metric in self._prometheus_metrics.values():
             yield metric
@@ -233,7 +238,7 @@ def parse_args():
         required=False,
         action='store_true',
         help='Allow connection to insecure Katello API',
-        default=False
+        default=bool(os.environ.get('INSECURE', False))
     )
     return parser.parse_args()
 
