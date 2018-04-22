@@ -167,12 +167,23 @@ class KatelloCollector(object):
                     self._add_data_to_prometheus_structure(metric_name, count)
 
     def _store_task_data(self, data):
+        available_statuses = ['paused', 'running', 'stopped', 'planned']
+        sanitized_data = {}
         for endpoint_name, endpoint_data in data.items():
             for task_status in endpoint_data:
                 status = task_status['state']
                 count = task_status['count']
-                self._add_data_to_prometheus_structure(
-                    self._task_metrics, count, [status])
+                # There are repeated statuses depending no the result. Adding all of them
+                sanitized_data[status] = sanitized_data.get(status, 0) + count
+
+        # Ensure we always return all the possible statuses
+        for status in available_statuses:
+            if status not in sanitized_data:
+                sanitized_data[status] = 0
+
+        for status, count in sanitized_data.items():
+            self._add_data_to_prometheus_structure(
+                self._task_metrics, count, [status])
 
     def _store_subscription_data(self, data):
         for endpoint_name, endpoint_data in data.items():
